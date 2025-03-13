@@ -1,47 +1,86 @@
-terraform {
-  required_providers {
-    aws = {
-      source = "hashicorp/aws"
-      version = "5.90.1"
-    }
+resource "aws_vpc" "test_vpc" {
+  cidr_block           = var.cidr_block_vpc
+  instance_tenancy     = "default"
+  enable_dns_hostnames = true
+
+  tags = {
+    name = "test_vpc"
   }
 }
 
-provider "aws" {
-  region = "us-east-1"
+resource "aws_subnet" "public_1" {
+    vpc_id                  = aws_vpc.test_vpc.id
+    cidr_block              = var.public_1_cidr_block
+    availability_zone       = "us-east-1a"
+    map_public_ip_on_launch = true
+
+    tags = {
+        name = "public_1"
+    }
+    
 }
 
-module "networking" {
-  source                  = "./modules/networking"
-  cidr_block_vpc          = var.cidr_block_vpc
-  public_1_cidr_block     = var.private_1_cidr_block
-  private_1_cidr_block    = var.public_1_cidr_block
+resource "aws_subnet" "private_1" {
+    vpc_id                  = aws_vpc.test_vpc.id
+    cidr_block              = var.private_1_cidr_block
+    availability_zone       = "us-east-1b"
+    map_public_ip_on_launch = true
+
+    tags = {
+        name = "private_1"
+    }
 }
 
-module "security_groups" {
-  source                 = "./modules/security_groups"
-  bastion_host_sg_name   = "bastion_host_sg"
-  lb_sg_name             = "load_balancer_sg"
-  vpc_id                 = module.networking.test_vpc_id
-  pvt_inst_sg_name       = "private_instance_sg"
+resource "aws_internet_gateway" "igw_test" {
+    vpc_id        = aws_vpc.test_vpc.id
+
+    tags = {
+        name      = "igw_test"
+    }
 }
 
-module "instances" {
-  source                   = "./modules/instances"
-  public_1_id              = module.networking.public_1_id
-  bastion_host_sg_id       = module.security_groups.bastion_host_sg_id
-  key_name                 = "public-instance-key"
-  ami                      = "ami-020d4adcf360a7fd7"
-  private_1_id             = module.networking.private_1_id
-  private_instance_sg_id   = module.security_groups.private_instance_sg_id
+resource "aws_eip" "eip_nat" {
+    domain = "vpc"
 }
 
-module "load_balancer" {
-  source                     = "./modules/load_balancer"
-  lb_security_group_id       =  module.security_groups.load_balancer_sg_id
-  load_balancer_subnets      =  [module.networking.public_1_id, module.networking.private_1_id]
-  tg_vpc_id                  =  module.networking.test_vpc_id
-  target_id                  =  module.instances.private_instance_id
-  listener_port              = "80"
-  listener_protocol          = "HTTP"
+resource "aws_nat_gateway" "test_nat_gw" {
+    allocation_id = aws_eip.eip_nat.id
+    subnet_id     = aws_subnet.public_1.id
+}
+
+resource "aws_route_table" "test_public_rt" {
+    vpc_id        = aws_vpc.test_vpc.id
+
+    tags = {
+        name      = "test_public_rt"
+    }
+
+    route {
+        cidr_block = "0.0.0.0/0"
+        gateway_id = aws_internet_gateway.igw_test.id
+    }
+}
+
+resource "aws_route_table_association" "public_rt_association" {
+    route_table_id = aws_route_table.test_public_rt.id
+    subnet_id      = aws_subnet.public_1.id
+}
+
+
+resource "aws_route_table" "private_rt" {
+    vpc_id         = aws_vpc.test_vpc.id
+
+    tags = {
+        name       = "private_rt"
+    }
+
+    route {
+        cidr_block     = "0.0.0.0/0"
+        nat_gateway_id = aws_nat_gateway.test_nat_gw.id
+    }
+}
+
+resource "aws_route_table_association" "private_rt_association" {
+    route_table_id =  aws_route_table.private_rt.id
+    subnet_id      = aws_subnet.private_1.id
 }
